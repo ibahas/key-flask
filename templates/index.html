@@ -3,25 +3,79 @@
 <html>
 <head>
     <title>Bruteforce Status</title>
+    <style>
+        body { font-family: monospace; margin: 20px; background: #1e1e1e; color: #fff; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { margin: 20px 0; padding: 10px; background: #2d2d2d; border-radius: 5px; }
+        .progress { width: 100%; height: 20px; background: #333; border-radius: 10px; margin: 10px 0; }
+        .progress-bar { height: 100%; background: #4CAF50; border-radius: 10px; transition: width 0.3s; }
+        .button { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 5px; }
+        .button.stop { background: #f44336; }
+        .success-info { background: #2d2d2d; padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success-entry { border-left: 3px solid #4CAF50; padding-left: 10px; margin: 5px 0; }
+        pre { margin: 0; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Bruteforce Status</h1>
+        <button onclick="toggleProcess()" id="toggleBtn" class="button">Start</button>
+        <div class="status">
+            <pre id="current-step">{{ current_step }}</pre>
+            <div class="progress">
+                <div class="progress-bar" id="progress-bar" style="width: {{ progress }}%"></div>
+            </div>
+            <pre id="progress">Progress: {{ progress }}%</pre>
+        </div>
+        <h2>Valid Usernames (<span id="username-count">0</span>)</h2>
+        <pre id="username-list"></pre>
+        <h2>Successes</h2>
+        <div id="success-info"></div>
+        <p><a href="/state.json" target="_blank" style="color: #4CAF50;">Download State File</a></p>
+    </div>
+
     <script>
         function updateStatus() {
             fetch('/status')
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById('current-step').textContent = data.current_step;
-                    document.getElementById('progress').textContent = data.progress.toFixed(2) + '%';
-                    document.getElementById('valid-count').textContent = data.valid_usernames.length;
+                    document.getElementById('progress').textContent = `Progress: ${data.progress.toFixed(2)}%`;
+                    document.getElementById('progress-bar').style.width = data.progress + '%';
+                    document.getElementById('username-count').textContent = data.valid_usernames.length;
+                    document.getElementById('username-list').textContent = data.valid_usernames.join('\n');
+                    
+                    const successDiv = document.getElementById('success-info');
+                    successDiv.innerHTML = '';
+                    data.success_info.forEach(info => {
+                        const div = document.createElement('div');
+                        div.className = 'success-entry';
+                        div.innerHTML = `
+                            <pre>✅ SUCCESS for ${info.username} → Password: ${info.password}
+➤ Status: ${info.status}
+➤ Duration: ${info.duration}
+➤ Remaining: ${info.remaining}</pre>
+                        `;
+                        successDiv.appendChild(div);
+                    });
+
+                    const btn = document.getElementById('toggleBtn');
+                    btn.textContent = data.is_running ? 'Stop' : 'Start';
+                    btn.className = data.is_running ? 'button stop' : 'button';
+                });
+        }
+
+        function toggleProcess() {
+            fetch('/toggle')
+                .then(response => response.json())
+                .then(data => {
+                    const btn = document.getElementById('toggleBtn');
+                    btn.textContent = data.is_running ? 'Stop' : 'Start';
+                    btn.className = data.is_running ? 'button stop' : 'button';
                 });
         }
         
-        // Update every 5 seconds
-        setInterval(updateStatus, 5000);
+        setInterval(updateStatus, 1000);
     </script>
-</head>
-<body>
-    <h1>Bruteforce Status</h1>
-    <p>Current Step: <span id="current-step">{{ current_step }}</span></p>
-    <p>Progress: <span id="progress">{{ progress }}%</span></p>
-    <p>Valid Usernames Found: <span id="valid-count">{{ valid_usernames|length }}</span></p>
 </body>
 </html>
