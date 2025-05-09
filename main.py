@@ -53,7 +53,25 @@ def save_success(username, password, info):
         json.dump(successes, f, indent=4)
 
 # === API REQUEST ===
+# Global variables for rate limiting
+last_request_time = 0
+request_counter = 0
+
 def send_request(payload):
+    global last_request_time, request_counter
+    
+    # Rate limiting logic
+    current_time = time.time()
+    if current_time - last_request_time >= 10:  # Reset counter every 10 seconds
+        request_counter = 0
+        last_request_time = current_time
+    elif request_counter >= 2:  # Only allow 2 requests per 10 second window
+        sleep_time = 10 - (current_time - last_request_time)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+            last_request_time = time.time()
+            request_counter = 0
+
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -62,6 +80,7 @@ def send_request(payload):
     }
     try:
         response = requests.post(API_URL, json=payload, headers=headers)
+        request_counter += 1
         return response.json(), payload
     except Exception as e:
         return {"error": str(e)}, payload
