@@ -1,0 +1,27 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bruteforce Status</title>
+    <script>
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('current-step').textContent = data.current_step;
+                    document.getElementById('progress').textContent = data.progress.toFixed(2) + '%';
+                    document.getElementById('valid-count').textContent = data.valid_usernames.length;
+                });
+        }
+        
+        // Update every 5 seconds
+        setInterval(updateStatus, 5000);
+    </script>
+</head>
+<body>
+    <h1>Bruteforce Status</h1>
+    <p>Current Step: <span id="current-step">{{ current_step }}</span></p>
+    <p>Progress: <span id="progress">{{ progress }}%</span></p>
+    <p>Valid Usernames Found: <span id="valid-count">{{ valid_usernames|length }}</span></p>
+</body>
+</html>

