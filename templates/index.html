@@ -1,19 +1,25 @@
-
 <!DOCTYPE html>
 <html>
 <head>
     <title>Bruteforce Status</title>
     <style>
-        body { font-family: monospace; margin: 20px; background: #1e1e1e; color: #fff; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .status { margin: 20px 0; padding: 10px; background: #2d2d2d; border-radius: 5px; }
-        .progress { width: 100%; height: 20px; background: #333; border-radius: 10px; margin: 10px 0; }
-        .progress-bar { height: 100%; background: #4CAF50; border-radius: 10px; transition: width 0.3s; }
-        .button { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 5px; }
-        .button.stop { background: #f44336; }
-        .success-info { background: #2d2d2d; padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .success-entry { border-left: 3px solid #4CAF50; padding-left: 10px; margin: 5px 0; }
-        pre { margin: 0; white-space: pre-wrap; }
+        body { font-family: monospace; margin: 20px; background: #1e1e1e; color: #fff; line-height: 1.6; }
+        .container { max-width: 800px; margin: 0 auto; padding: 20px; background: #282c34; border-radius: 8px; }
+        h1, h2 { color: #61dafb; border-bottom: 1px solid #3a3f4b; padding-bottom: 5px; margin-top: 15px; }
+        .status { margin: 20px 0; padding: 15px; background: #3a3f4b; border-radius: 5px; }
+        .progress { width: 100%; height: 20px; background: #555; border-radius: 10px; margin: 10px 0; overflow: hidden; }
+        .progress-bar { height: 100%; background: #4CAF50; border-radius: 10px; transition: width 0.3s ease-in-out; }
+        .button { padding: 10px 20px; background: #61dafb; color: #282c34; border: none; cursor: pointer; border-radius: 5px; font-size: 1em; transition: background 0.3s ease; }
+        .button:hover { background: #a4f1ff; }
+        .button.stop { background: #f44336; color: white; }
+        .button.stop:hover { background: #ff6b5f; }
+        .success-info-section { margin-top: 20px; padding-top: 10px; }
+        .success-entry { background: #3a3f4b; padding: 15px; margin: 10px 0; border-left: 4px solid #4CAF50; border-radius: 5px; }
+        pre { margin: 0; white-space: pre-wrap; word-break: break-all; color: #abb2bf;}
+        .username-list { max-height: 200px; overflow-y: auto; border: 1px solid #555; padding: 10px; border-radius: 5px; background: #3a3f4b;}
+        .file-links { margin-top: 20px; font-size: 0.9em; }
+        .file-links a { color: #61dafb; text-decoration: none; margin-right: 15px; }
+        .file-links a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -26,12 +32,29 @@
                 <div class="progress-bar" id="progress-bar" style="width: {{ progress }}%"></div>
             </div>
             <pre id="progress">Progress: {{ progress }}%</pre>
+            <pre id="current-username">Current User: N/A</pre>
         </div>
+
         <h2>Valid Usernames (<span id="username-count">0</span>)</h2>
-        <pre id="username-list"></pre>
-        <h2>Successes</h2>
-        <div id="success-info"></div>
-        <p><a href="/state.json" target="_blank" style="color: #4CAF50;">Download State File</a></p>
+        <div class="username-list">
+             <pre id="username-list"></pre>
+        </div>
+
+
+        <div class="success-info-section">
+            <h2>Successes (<span id="success-count">0</span>)</h2>
+            <div id="success-info">
+                <!-- Success entries will be added here by JavaScript -->
+            </div>
+        </div>
+
+
+        <div class="file-links">
+            <p>Download Data:</p>
+            <a href="/state.json" target="_blank">Username State File</a>
+            <a href="/successes.json" target="_blank">Successes File</a>
+        </div>
+
     </div>
 
     <script>
@@ -42,26 +65,42 @@
                     document.getElementById('current-step').textContent = data.current_step;
                     document.getElementById('progress').textContent = `Progress: ${data.progress.toFixed(2)}%`;
                     document.getElementById('progress-bar').style.width = data.progress + '%';
+                    document.getElementById('current-username').textContent = `Current User: ${data.current_username || 'N/A'}`;
+
+                    // Update Valid Usernames list
                     document.getElementById('username-count').textContent = data.valid_usernames.length;
                     document.getElementById('username-list').textContent = data.valid_usernames.join('\n');
-                    
-                    const successDiv = document.getElementById('success-info');
-                    successDiv.innerHTML = '';
-                    data.success_info.forEach(info => {
-                        const div = document.createElement('div');
-                        div.className = 'success-entry';
-                        div.innerHTML = `
-                            <pre>✅ SUCCESS for ${info.username} → Password: ${info.password}
-➤ Status: ${info.status}
-➤ Duration: ${info.duration}
-➤ Remaining: ${info.remaining}</pre>
-                        `;
-                        successDiv.appendChild(div);
-                    });
 
+                    // Update Successes list
+                    const successDiv = document.getElementById('success-info');
+                    document.getElementById('success-count').textContent = data.success_info.length;
+                    // Clear only if the data has changed to avoid flickering on frequent updates
+                    if (successDiv.children.length !== data.success_info.length) {
+                         successDiv.innerHTML = ''; // Clear existing
+                         data.success_info.forEach(info => {
+                             const div = document.createElement('div');
+                             div.className = 'success-entry';
+                             div.innerHTML = `
+                                 <pre>✅ SUCCESS for ${info.username}
+Password: ${info.password}
+Status: ${info.status}
+Duration: ${info.duration}
+Remaining: ${info.remaining}
+Timestamp: ${info.timestamp || 'N/A'}</pre>
+                             `;
+                             successDiv.appendChild(div);
+                         });
+                    }
+
+
+                    // Update Toggle Button state
                     const btn = document.getElementById('toggleBtn');
                     btn.textContent = data.is_running ? 'Stop' : 'Start';
                     btn.className = data.is_running ? 'button stop' : 'button';
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    document.getElementById('current-step').textContent = `Error fetching status: ${error}`;
                 });
         }
 
@@ -69,13 +108,18 @@
             fetch('/toggle')
                 .then(response => response.json())
                 .then(data => {
-                    const btn = document.getElementById('toggleBtn');
-                    btn.textContent = data.is_running ? 'Stop' : 'Start';
-                    btn.className = data.is_running ? 'button stop' : 'button';
+                    // Status update will handle button text/class
+                    console.log('Toggle response:', data);
+                })
+                 .catch(error => {
+                    console.error('Error toggling process:', error);
+                    document.getElementById('current-step').textContent = `Error toggling process: ${error}`;
                 });
         }
-        
-        setInterval(updateStatus, 1000);
+
+        // Initial update and set interval
+        updateStatus(); // Call once immediately on page load
+        setInterval(updateStatus, 2000); // Update status every 2 seconds
     </script>
 </body>
 </html>
