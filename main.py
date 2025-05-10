@@ -139,7 +139,7 @@ def try_passwords_batch(username, start_idx):
 
     # Passwords to try in this batch (only the first 10 in the 1000-range)
     password_attempts = [str(i).zfill(4)
-                         for i in range(start_idx, min(start_idx + 10, 10000))]
+                         for i in range(start_idx, min(start_idx + 1000, 10000))]
 
     total_requests = len(password_attempts)
     processed_requests = 0
